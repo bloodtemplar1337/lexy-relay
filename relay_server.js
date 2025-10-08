@@ -1,4 +1,4 @@
-// relay_server.js — minimal ESM relay with per-host queues + token auth
+// relay_server.js — ESM relay with per-host queues + token auth (supports two env var names)
 import express from "express";
 import cors from "cors";
 
@@ -6,10 +6,15 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
-// ----- auth -----
-const TOKEN = process.env.LEXY_TOKEN || "";
-if (!TOKEN) console.warn("[Relay] Warning: LEXY_TOKEN is empty!");
+// --- auth (supports both names) ---
+const TOKEN =
+  process.env.LEXY_RELAY_TOKEN ||
+  process.env.LEXY_TOKEN ||
+  "";
 
+if (!TOKEN) console.warn("[Relay] Warning: LEXY_RELAY_TOKEN/LEXY_TOKEN is empty!");
+
+// body or header auth helper
 function authed(req, res) {
   const t = (req.body?.token || req.headers["x-lexy-token"] || "").toString();
   if (!TOKEN || t === TOKEN) return true;
@@ -17,15 +22,15 @@ function authed(req, res) {
   return false;
 }
 
-// ----- in-memory state (resets on redeploy — good enough) -----
-const queues = new Map();           // key: `${token}:${host}` -> array of packets
-const reports = [];                 // simple ring buffer
+// --- in-memory state ---
+const queues = new Map();    // key: `${token}:${host}` -> array of packets
+const reports = [];
 const MAX_REPORTS = 200;
 
 const key = (token, host) => `${token}:${host || "default"}`;
 const q = k => (queues.has(k) ? queues.get(k) : queues.set(k, []).get(k));
 
-// ----- endpoints -----
+// --- endpoints ---
 app.post("/ping", (req, res) => {
   if (!authed(req, res)) return;
   res.json({ ok: true });
@@ -49,14 +54,14 @@ app.post("/pull", (req, res) => {
   const host = (req.body?.host || "default").toString();
   const k = key(TOKEN, host);
   const arr = q(k);
-  if (!arr.length) return res.status(204).end(); // no content
+  if (!arr.length) return res.status(204).end();
   const packet = arr.shift();
   console.log(`[Relay] pulled host=${host} remaining=${arr.length}`);
   res.json(packet);
 });
 
 app.post("/report", (req, res) => {
-  // allow reports without auth to avoid losing liveness notes on token mismatch
+  // allow without auth to avoid losing liveness notes
   const r = {
     ts: new Date().toISOString(),
     host: req.body?.host || "unknown",
@@ -70,7 +75,7 @@ app.post("/report", (req, res) => {
 });
 
 app.get("/stats", (req, res) => {
-  // auth via header only (so you can visit from browser with X-Lexy-Token)
+  // header auth only so you can open from a browser with X-Lexy-Token
   const t = (req.headers["x-lexy-token"] || "").toString();
   if (TOKEN && t !== TOKEN) return res.status(401).json({ error: "unauthorized" });
   const out = {};
